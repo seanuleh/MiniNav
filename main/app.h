@@ -57,7 +57,7 @@ void app_toggle_full(const char *why);    // only while touch is off
 
 // board.cpp
 void board_init(void);
-void board_poll_inputs(void);          // BOOT button + IMU, call every ~10 ms
+void board_poll_inputs(void);          // BOOT button, IMU, touch: call every ~10 ms
 uint16_t *display_acquire_frame(void); // 320x240 byte-swapped RGB565 buffer to fill
 void display_submit_frame(uint16_t *fb);
 void display_request_status(void);

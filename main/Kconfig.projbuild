@@ -1,5 +1,18 @@
 menu "MiniNav (Android Auto minimap)"
 
+    choice AAM_BOARD
+        prompt "Board"
+        default AAM_BOARD_WAVESHARE_28
+
+        config AAM_BOARD_WAVESHARE_28
+            bool "Waveshare ESP32-S3-Touch-LCD-2.8 (ST7789, CST3530 touch, QMI8658 IMU)"
+
+        config AAM_BOARD_FREENOVE_28
+            bool "Freenove FNK0104B 2.8\" (ILI9341, FT6336G touch, no IMU)"
+            help
+                No accelerometer: the picture does not flip when the board is turned over.
+    endchoice
+
     config AAM_AP_SSID
         string "WiFi access point name"
         default "MiniNav"

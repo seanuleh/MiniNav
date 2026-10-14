@@ -1,5 +1,8 @@
-// Board layer: ST7789 LCD (LovyanGFX, same panel settings as the gta-minimap-demo), backlight,
-// BOOT button, QMI8658 accelerometer (auto-rotation), CST3530 touch and (for H.264 dumps) microSD.
+// Board layer: LCD (LovyanGFX), backlight, BOOT button, accelerometer (auto-rotation), touch and
+// (for H.264 dumps) microSD. Two boards, picked in menuconfig:
+//   Waveshare ESP32-S3-Touch-LCD-2.8: ST7789 (same panel settings as the gta-minimap-demo),
+//     QMI8658 accelerometer, CST3530 touch.
+//   Freenove FNK0104B 2.8": ILI9341V, FT6336G touch, no accelerometer (rotation stays fixed).
 // One display task owns the LCD; everything else hands it frames or asks for a status redraw.
 #define LGFX_USE_V1
 #include <LovyanGFX.hpp>
@@ -21,14 +24,52 @@
 
 static const char *TAG = "board";
 
+#if CONFIG_AAM_BOARD_FREENOVE_28
+// ---- pins (Freenove FNK0104B: ES3C28P spec sheet and Freenove's sketches) -------------------
+#define PIN_LCD_SCLK 12
+#define PIN_LCD_MOSI 11
+#define PIN_LCD_MISO 13
+#define PIN_LCD_CS 10
+#define PIN_LCD_DC 46
+#define PIN_LCD_RST -1    // tied to the ESP32's reset
+#define PIN_LCD_BL 45
+#define LCD_SPI_HOST SPI2_HOST   // pins 10-13 are SPI2's IO MUX pins
+#define LCD_SPI_HZ 40000000      // what Freenove runs the ILI9341 at; 80 MHz may work too
+#define LCD_3WIRE false
+typedef lgfx::Panel_ILI9341 lcd_panel_t;
+#define PIN_BOOT 0
+#define PIN_AMP_EN 1      // audio amplifier enable, low = on: held high so it stays silent
+#define PIN_SD_CLK 38
+#define PIN_SD_CMD 40
+#define PIN_SD_D0 39
+#define PIN_SD_D3 47      // held high so the card stays in SD (not SPI) mode
+#define HAS_IMU 0
+#define PIN_TP_SDA 16     // shared with the ES8311 audio codec (unused here)
+#define PIN_TP_SCL 15
+#define PIN_TP_INT 17
+#define PIN_TP_RST 18
+#define TP_I2C_PORT 0
+#define TP_ADDR 0x38      // FT6336G
+// Quarter turns between the touch panel's portrait frame and LovyanGFX's. Freenove's sketches
+// (TFT_eSPI) map touches for a frame 180 degrees from LovyanGFX's Panel_ILI9341, hence 2. If taps
+// land mirrored through the centre of the screen, set this to 0.
+#define TP_ROT_OFFSET 2
+#else
 // ---- pins (Waveshare ESP32-S3-Touch-LCD-2.8 demo code) ----------------------
 #define PIN_LCD_SCLK 40
 #define PIN_LCD_MOSI 45
+#define PIN_LCD_MISO -1
 #define PIN_LCD_CS 42
 #define PIN_LCD_DC 41
 #define PIN_LCD_RST 39
 #define PIN_LCD_BL 5
+#define LCD_SPI_HOST SPI3_HOST
+#define LCD_SPI_HZ 80000000
+#define LCD_3WIRE true
+typedef lgfx::Panel_ST7789 lcd_panel_t;
 #define PIN_BOOT 0
+#define PIN_AMP_EN -1
+#define HAS_IMU 1
 #define PIN_IMU_SDA 11
 #define PIN_IMU_SCL 10
 #define PIN_SD_CLK 14
@@ -42,26 +83,28 @@ static const char *TAG = "board";
 #define PIN_TP_RST 2
 #define TP_I2C_PORT 0
 #define TP_ADDR 0x58      // CST3530
+#define TP_ROT_OFFSET 0
 #define IMU_ROT_OFFSET 3  // quarter turns between accelerometer axes and panel (verified in the demo)
+#endif
 
 class LGFX : public lgfx::LGFX_Device {
-    lgfx::Panel_ST7789 _panel;
+    lcd_panel_t _panel;
     lgfx::Bus_SPI _bus;
     lgfx::Light_PWM _light;
 
 public:
     LGFX() {
         auto b = _bus.config();
-        b.spi_host = SPI3_HOST;
+        b.spi_host = LCD_SPI_HOST;
         b.spi_mode = 0;
-        b.freq_write = 80000000;
+        b.freq_write = LCD_SPI_HZ;
         b.freq_read = 16000000;
-        b.spi_3wire = true;
+        b.spi_3wire = LCD_3WIRE;
         b.use_lock = true;
         b.dma_channel = SPI_DMA_CH_AUTO;
         b.pin_sclk = PIN_LCD_SCLK;
         b.pin_mosi = PIN_LCD_MOSI;
-        b.pin_miso = -1;
+        b.pin_miso = PIN_LCD_MISO;
         b.pin_dc = PIN_LCD_DC;
         _bus.config(b);
         _panel.setBus(&_bus);
@@ -558,6 +601,9 @@ static void display_task(void *) {
     }
 }
 
+static uint32_t millis(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
+
+#if HAS_IMU
 // ---- IMU: auto-rotation --------------------------------------
 static uint8_t imu_addr;
 static float gx, gy, gz;
@@ -585,8 +631,6 @@ static void imu_init(void) {
     imu_write(0x08, 0x01);  // CTRL7: accel on
     ESP_LOGI(TAG, "QMI8658 at 0x%02X", imu_addr);
 }
-
-static uint32_t millis(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
 
 // Landscape rotation (1 or 3) for the current gravity, or -1 while flat, portrait or ambiguous.
 // The Android Auto picture is landscape, so portrait holds keep the last landscape rotation.
@@ -627,15 +671,56 @@ static void imu_poll(void) {
     g_app.rotation = r;
     if (s_display_task) xTaskNotifyGive(s_display_task);
 }
+#else
+static void imu_init(void) { ESP_LOGI(TAG, "no accelerometer on this board, rotation fixed"); }
+static void imu_poll(void) {}
+#endif
 
-// ---- CST3530 touch -> Android Auto taps and drags --------------------------------------
+// ---- touch -> Android Auto taps and drags --------------------------------------------------
+static bool s_tp_ok;
+
+#if CONFIG_AAM_BOARD_FREENOVE_28
+// FT6336G (FocalTech): from register 0x02, the number of touch points, then point 1 as XH (event in
+// bits 7..6: 0 down, 1 up, 2 contact), XL, YH, YL with 12-bit coordinates. The count drops to 0 when
+// the finger lifts, so plain polling works and INT is not needed.
+static bool ft6336_read(uint8_t *raw) {
+    static const uint8_t reg = 0x02;
+    return lgfx::i2c::transactionWriteRead(TP_I2C_PORT, TP_ADDR, &reg, 1, raw, 5, 400000).has_value();
+}
+
+static void touch_init(void) {
+    gpio_config_t io = {};
+    io.pin_bit_mask = 1ULL << PIN_TP_RST;
+    io.mode = GPIO_MODE_OUTPUT;
+    gpio_config(&io);
+    lgfx::i2c::init(TP_I2C_PORT, PIN_TP_SDA, PIN_TP_SCL);
+    gpio_set_level((gpio_num_t)PIN_TP_RST, 0); vTaskDelay(pdMS_TO_TICKS(10));
+    gpio_set_level((gpio_num_t)PIN_TP_RST, 1); vTaskDelay(pdMS_TO_TICKS(300));  // FT6x36 needs ~300 ms
+    uint8_t raw[5];
+    for (int i = 0; i < 5 && !s_tp_ok; i++) {
+        s_tp_ok = ft6336_read(raw);
+        if (!s_tp_ok) vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    if (s_tp_ok) ESP_LOGI(TAG, "touch FT6336G found");
+    else ESP_LOGW(TAG, "touch controller not found");
+}
+
+// One touch report: false when there is none to read.
+static bool tp_read(bool &pressed, int &rx, int &ry) {
+    uint8_t raw[5];
+    if (!ft6336_read(raw)) return false;
+    int n = raw[0] & 0x0F;
+    pressed = n >= 1 && n <= 2 && (raw[1] >> 6) != 1;
+    rx = ((raw[1] & 0x0F) << 8) | raw[2];
+    ry = ((raw[3] & 0x0F) << 8) | raw[4];
+    return true;
+}
+#else
 // This board's touch chip is a Hynitron CST3530 at I2C 0x58 with 32-bit register addresses (not
 // the CST328 at 0x1A that Waveshare's code expects). Protocol from the CST353X Linux driver in
 // gl-inet/gl-openwrt (package/kernel/cst353x): write D0070000, read 9 bytes ([0..1] checksum =
 // 0x55 + bytes 4..8; byte 8 high nibble 1 = down, 2 = held, 0 = up; x/y 12-bit in 4, 5, 7), then
 // write D00002AB to end the frame.
-static bool s_tp_ok;
-
 static bool cst3530_frame(uint8_t *raw, bool *acked = nullptr) {
     static const uint8_t reg[4] = { 0xD0, 0x07, 0x00, 0x00 };
     static const uint8_t end[4] = { 0xD0, 0x00, 0x02, 0xAB };
@@ -668,6 +753,20 @@ static void touch_init(void) {
     else ESP_LOGW(TAG, "touch controller not found");
 }
 
+// Reads only while the chip pulls INT low, as the Linux driver does: polling and acknowledging the
+// frame register restarts the chip's contact tracking and turns a drag into a string of taps.
+static bool tp_read(bool &pressed, int &rx, int &ry) {
+    if (gpio_get_level((gpio_num_t)PIN_TP_INT) != 0) return false;
+    uint8_t raw[9];
+    if (!cst3530_frame(raw)) return false;
+    int ev = raw[8] >> 4;
+    pressed = ev == 1 || ev == 2;
+    rx = raw[4] + ((raw[7] & 0x0F) << 8);
+    ry = raw[5] + ((raw[7] & 0xF0) << 4);
+    return true;
+}
+#endif
+
 // Raw touch is in the panel's portrait frame (240x320); map it to the current rotation.
 static void touch_to_screen(int rx, int ry, int rot, int &x, int &y) {
     const int w0 = 240, h0 = 320;
@@ -679,8 +778,6 @@ static void touch_to_screen(int rx, int ry, int rot, int &x, int &y) {
     }
 }
 
-// Reads only while the chip pulls INT low, as the Linux driver does: polling and acknowledging the
-// frame register restarts the chip's contact tracking and turns a drag into a string of taps.
 // The status screen is always touchable (its setting buttons); Android Auto gets touches only while
 // video is up and the Touch setting is on.
 static void touch_poll(void) {
@@ -693,22 +790,18 @@ static void touch_poll(void) {
     if (!to_aa && down) { down = false; aap_send_touch(1, ax, ay); }
     if (video && !to_aa) return;
     uint32_t now = millis();
-    if (gpio_get_level((gpio_num_t)PIN_TP_INT) != 0) {
+    bool pressed;
+    int rx, ry;
+    if (!tp_read(pressed, rx, ry)) {
         if (down && now - t_last > 300) { down = false; aap_send_touch(1, ax, ay); }  // lost the lift
         if (now - t_last > 300) ui_down = false;
         return;
     }
-    uint8_t raw[9];
-    if (!cst3530_frame(raw)) return;
-    int ev = raw[8] >> 4;
     t_last = now;
     int lx = 0, ly = 0;
-    bool pressed = ev == 1 || ev == 2;
     if (pressed) {
-        int rx = raw[4] + ((raw[7] & 0x0F) << 8);
-        int ry = raw[5] + ((raw[7] & 0xF0) << 4);
         if (rx >= 240 || ry >= 320) return;
-        touch_to_screen(rx, ry, g_app.rotation, lx, ly);
+        touch_to_screen(rx, ry, (g_app.rotation + TP_ROT_OFFSET) & 3, lx, ly);
     }
     if (!video) {  // status screen: one action per finger press
         if (pressed && !ui_down) { ui_down = true; status_tap(lx, ly); }
@@ -802,6 +895,10 @@ void board_init(void) {
     io.mode = GPIO_MODE_INPUT;
     io.pull_up_en = GPIO_PULLUP_ENABLE;
     gpio_config(&io);
+    if (PIN_AMP_EN >= 0) {
+        gpio_set_direction((gpio_num_t)PIN_AMP_EN, GPIO_MODE_OUTPUT);
+        gpio_set_level((gpio_num_t)PIN_AMP_EN, 1);
+    }
 
     lcd.init();
     if (g_app.rotation != 1 && g_app.rotation != 3) g_app.rotation = 1;

@@ -3,6 +3,8 @@ build/
 build-*/
 sdkconfig
 sdkconfig.old
+sdkconfig.freenove
+sdkconfig.freenove.old
 managed_components/
 
 # Third-party library, fetched by tools/fetch_lovyangfx.sh (125 MB, unmodified 1.2.32)

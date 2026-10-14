@@ -1,0 +1,3 @@
+# Freenove FNK0104B 2.8" (ES3C28P): ESP32-S3R8, 16 MB flash, 8 MB octal PSRAM, like the Waveshare
+# board, so only the board choice differs. Layered on sdkconfig.defaults, see the README.
+CONFIG_AAM_BOARD_FREENOVE_28=y

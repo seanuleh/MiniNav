@@ -55,6 +55,22 @@ idf.py -p <port> -b 921600 flash    # e.g. /dev/cu.usbmodem101, /dev/ttyACM0, CO
 
 If flashing can't connect: hold BOOT, tap RESET, release BOOT, then flash again.
 
+### Freenove FNK0104B 2.8" board
+
+MiniNav also builds for the Freenove ESP32-S3 2.8" display with touch (FNK0104B, module ES3C28P:
+ESP32-S3R8, 16 MB flash, 8 MB PSRAM, ILI9341V LCD, FT6336G touch). It has no accelerometer, so the
+picture does not flip when the board is turned over. The web installer only has the Waveshare
+image, so build this one yourself:
+
+```sh
+idf.py -B build-freenove -D SDKCONFIG=sdkconfig.freenove \
+       -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.freenove" build
+idf.py -B build-freenove -D SDKCONFIG=sdkconfig.freenove -p <port> -b 921600 flash
+```
+
+Or pick *Board* in `idf.py menuconfig` → *MiniNav (Android Auto minimap)*. If taps land mirrored
+through the centre of the screen, set `TP_ROT_OFFSET` to 0 in `main/board.cpp`.
+
 After changing the code, `python3 tools/make_web_firmware.py` refreshes the files the guide's Install
 button flashes (`docs/flash/MiniNav.bin` and `MiniNav.bin.js`).
 
@@ -97,7 +113,7 @@ Change names and passwords with `idf.py menuconfig` → *MiniNav (Android Auto m
 
 ```
 main/app_main.cpp   start-up, inputs, serial console
-main/board.cpp      display, connection screen, BOOT button, touch, IMU
+main/board.cpp      display, connection screen, BOOT button, touch, IMU (per-board pins and chips)
 main/net.cpp        WiFi (access point + phone hotspot)
 main/aap.cpp        Android Auto protocol: framing, TLS, channels, input
 main/video.cpp      H.264 decoder, crop and scale to the LCD
